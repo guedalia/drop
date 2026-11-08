@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Send to Claude</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#c96442">
+<link rel="icon" href="icon_192.png">
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --ink:#1f2328; --muted:#6a737d; --line:#e1e4e8; --accent:#c96442; --ok:#1a7f37; --err:#cf222e; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+  main { max-width:520px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; font-size:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  label.pick { display:block; text-align:center; background:var(--accent); color:#fff; font-weight:600; padding:14px; border-radius:10px; cursor:pointer; }
+  label.pick input { display:none; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { padding:10px 0; border-top:1px solid var(--line); }
+  li:first-child { border-top:0; }
+  .row { display:flex; justify-content:space-between; gap:12px; align-items:baseline; }
+  .name { overflow-wrap:anywhere; }
+  .st { font-size:13px; color:var(--muted); white-space:nowrap; }
+  .st.ok { color:var(--ok); } .st.err { color:var(--err); }
+  .bar { height:4px; background:var(--line); border-radius:2px; margin-top:6px; overflow:hidden; }
+  .bar > div { height:100%; width:0; background:var(--accent); transition:width .15s; }
+  .hint { font-size:13px; color:var(--muted); }
+  #empty { color:var(--muted); font-size:14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Send to Claude</h1>
+  <p class="sub">Share a file here from any app, or pick one below. Then type <b>/phone</b> in a Claude conversation.</p>
+  <div class="card">
+    <label class="pick">Choose files<input id="pick" type="file" multiple></label>
+  </div>
+  <div class="card">
+    <ul id="list"></ul>
+    <p id="empty">Nothing sent yet.</p>
+  </div>
+  <p class="hint">Files wait in a private inbox until you pull them in Claude.</p>
+</main>
+<script>
+const SB_URL = 'https://ahomwnlimuxinttwrikr.supabase.co';
+const SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFob213bmxpbXV4aW50dHdyaWtyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM2NjI5MTUsImV4cCI6MjA4OTIzODkxNX0.B5y9pilGpPM2xxkC30nZfJhUKOPFI8ELSZjbYF5HNeM';
+const BUCKET = 'phone_drop';
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+
+const list = document.getElementById('list');
+const empty = document.getElementById('empty');
+
+function stamp() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}_${p(d.getMonth() + 1)}_${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+function safeName(name) {
+  const dot = name.lastIndexOf('.');
+  const ext = dot > 0 ? name.slice(dot).replace(/[^A-Za-z0-9.]/g, '') : '';
+  let base = (dot > 0 ? name.slice(0, dot) : name).replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
+  return (base || 'file') + ext.toLowerCase();
+}
+
+function fmtSize(n) {
+  return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+}
+
+function addRow(name, size) {
+  empty.hidden = true;
+  const li = document.createElement('li');
+  li.innerHTML = '<div class="row"><span class="name"></span><span class="st">waiting</span></div><div class="bar"><div></div></div>';
+  li.querySelector('.name').textContent = `${name} · ${fmtSize(size)}`;
+  list.prepend(li);
+  return {st: li.querySelector('.st'), bar: li.querySelector('.bar > div')};
+}
+
+let seq = 0;
+function upload(blob, name, type) {
+  const ui = addRow(name, blob.size);
+  const path = `inbox/${stamp()}_${String(seq++).padStart(2, '0')}_${safeName(name)}`;
+  return new Promise(resolve => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${SB_URL}/storage/v1/object/${BUCKET}/${path}`);
+    xhr.setRequestHeader('apikey', SB_ANON);
+    xhr.setRequestHeader('Authorization', `Bearer ${SB_ANON}`);
+    xhr.setRequestHeader('Content-Type', type || 'application/octet-stream');
+    xhr.setRequestHeader('x-upsert', 'false');
+    xhr.upload.onprogress = e => { if (e.lengthComputable) { ui.bar.style.width = (100 * e.loaded / e.total) + '%'; ui.st.textContent = Math.round(100 * e.loaded / e.total) + '%'; } };
+    xhr.onload = () => {
+      const ok = xhr.status >= 200 && xhr.status < 300;
+      ui.st.className = 'st ' + (ok ? 'ok' : 'err');
+      ui.st.textContent = ok ? 'sent ✓' : `failed (${xhr.status})`;
+      if (ok) ui.bar.style.width = '100%';
+      else console.error(xhr.responseText);
+      resolve(ok);
+    };
+    xhr.onerror = () => { ui.st.className = 'st err'; ui.st.textContent = 'failed (network)'; resolve(false); };
+    xhr.send(blob);
+  });
+}
+
+document.getElementById('pick').addEventListener('change', async e => {
+  for (const f of e.target.files) await upload(f, f.name, f.type);
+  e.target.value = '';
+});
+
+async function handleShare() {
+  if (!new URLSearchParams(location.search).has('share')) return;
+  history.replaceState(null, '', './');
+  const cache = await caches.open('drop-share');
+  const m = await cache.match('./_share/manifest');
+  if (!m) return;
+  const items = await m.json();
+  await cache.delete('./_share/manifest');
+  for (const it of items) {
+    const r = await cache.match(it.key);
+    if (!r) continue;
+    await upload(await r.blob(), it.name, it.type);
+    await cache.delete(it.key);
+  }
+}
+handleShare();
+</script>
+</body>
+</html>
